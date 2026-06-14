@@ -19,6 +19,8 @@ typedef struct cache_element cache_element;
 
 #define MAX_CLIENTS 10
 #define MAX_BYTES 4096
+#define MAX_ELEMENT_SIZE 1048576
+#define MAX_SIZE 10485760
 
 struct cache_element {
     char *data;
@@ -28,11 +30,90 @@ struct cache_element {
     cache_element *next;
 };
 
-cache_element *find(char *url);
+cache_element *find(char *url){
+    cache_element *site = NULL;
+    int temp_lock_val = pthread_mutex_lock(&lock);
+    printf("Remove cache lock acquired: %d\n", temp_lock_val);
+    if(head !=NULL){
+        site = head;
+        while(site != NULL){
+            if(strcmp(site->url, url) == 0){
+                printf("LRU time track before: %ld\n", site->lru_time_track);
+                printf("Cache hit for url: %s\n", url);
+                site->lru_time_track = time(NULL);
+                printf("LRU time track after: %ld\n", site->lru_time_track);
+                break;
+            }
+            site = site->next;
+        }
+    }else{
+        printf("Cache is empty\n");
+    }
 
-int add_cache_element(char *data, int size, char *url);
+    temp_lock_val = pthread_mutex_unlock(&lock);
+    printf("Remove cache lock released: %d\n", temp_lock_val);
+    return site;
+}
 
-void remove_cache_element();
+int add_cache_element(char *data, int size, char *url){
+    int temp_lock_val = pthread_mutex_lock(&lock);
+    printf("Add cache lock acquired: %d\n", temp_lock_val);
+    int element_size = size+1+strlen(url)+sizeof(cache_element);
+    if(element_size > MAX_ELEMENT_SIZE){
+        temp_lock_val = pthread_mutex_unlock(&lock);
+        printf("Add cache lock released: %d\n", temp_lock_val);
+        return 0;
+    }
+    else{
+        while(cache_size + element_size > MAX_SIZE){
+            remove_cache_element();
+        }
+        cache_element *element = (cache_element *)malloc(sizeof(cache_element));
+        element->data = (char *)malloc(size+1);
+        strcpy(element->data, data);
+        element->url = (char *)malloc(strlen(url)*sizeof(char));
+        strcpy(element->url, url);
+        element->lru_time_track = time(NULL);
+        element->next = head;
+        element->len = size;
+        head = element;
+        cache_size += element_size;
+        temp_lock_val = pthread_mutex_unlock(&lock);
+        printf("Add cache lock released: %d\n", temp_lock_val);
+        return 1;
+    }
+    return 0;
+}
+
+void remove_cache_element(){
+    cache_element *p;
+    cache_element *q;
+    cache_element *temp;
+
+    int temp_lock_val = pthread_mutex_lock(&lock);
+    printf("Remove cache lock acquired: %d\n", temp_lock_val);
+    if(head != NULL){
+        for(q=head, p=head, temp=head; q->next !=NULL; q=q->next){
+            if((q->next->lru_time_track) < temp->lru_time_track){
+                temp = q->next;
+                p = q;
+            }
+        }
+        if(temp==head){
+            head = head->next;
+        }
+        else{
+            p->next = temp->next;
+        }
+        cache_size -= (temp->len)- sizeof(cache_element) -strlen(temp->url) - 1;
+        free(temp->data);
+        free(temp->url);
+        free(temp);
+    }
+    temp_lock_val = pthread_mutex_unlock(&lock);
+    printf("Remove cache lock released: %d\n", temp_lock_val);
+    
+}
 
 int port_number = 8080;
 
@@ -44,6 +125,27 @@ pthread_mutex_t lock;
 
 cache_element *head;
 int cache_size;
+
+int sendErrorMessage(int socket, int errorCode){
+    char *message;
+    if(errorCode == 500){
+        message = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\n\r\n<html><body><h1>500 Internal Server Error</h1></body></html>";
+    }
+    else if(errorCode == 404){
+        message = "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\n\r\n<html><body><h1>404 Not Found</h1></body></html>";
+    }
+    else{
+        message = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<html><body><h1>400 Bad Request</h1></body></html>";
+    }
+    return send(socket, message, strlen(message), 0);
+}
+
+int checkHTTPversion(char *version){
+    if(strcmp(version, "HTTP/1.0") == 0 || strcmp(version, "HTTP/1.1") == 0){
+        return 1;
+    }
+    return 0;
+}
 
 int connectRemoteServer(char *host_addr, int port_num){
     int remoteSocket = socket(AF_INET, SOCK_STREAM, 0);
@@ -72,7 +174,7 @@ int connectRemoteServer(char *host_addr, int port_num){
     return remoteSocket;
 }
 
-int handle_request(int socket, ParsedRequest *request, char *tempReq){
+int handle_request(int clientSocketId, ParsedRequest *request, char *tempReq){
     char *buf = (char *)malloc(MAX_BYTES*sizeof(char));
     strcpy(buf, "GET ");
     strcat(buf, request->path);
@@ -102,6 +204,43 @@ int handle_request(int socket, ParsedRequest *request, char *tempReq){
     }
 
     int remoteSocketId = connectRemoteServer(request->host, server_port);
+    if(remoteSocketId < 0){
+        return -1;
+    }
+
+    int bytes_send = send(remoteSocketId, buf, strlen(buf), 0);
+    bzero(buf, MAX_BYTES);
+
+    bytes_send = recv(remoteSocketId, buf, MAX_BYTES-1, 0);
+
+    char *temp_buffer = (char *)malloc(MAX_BYTES*sizeof(char));
+    int temp_buffer_size = MAX_BYTES;
+    int temp_buffer_index = 0;
+
+    while(bytes_send>0){
+        bytes_send = send(clientSocketId, buf, bytes_send, 0);
+        for(int i=0;i<bytes_send/sizeof(char);i++){
+            temp_buffer[temp_buffer_index] = buf[i];
+            temp_buffer_index++;
+            if(temp_buffer_index == temp_buffer_size){
+                temp_buffer_size *= 2;
+                temp_buffer = (char *)realloc(temp_buffer, temp_buffer_size*sizeof(char));
+            }
+            if(bytes_send <0){
+                printf("Error sending data to client\n");
+                break;
+            }
+            bzero(buf, MAX_BYTES);
+            bytes_send = recv(remoteSocketId, buf, MAX_BYTES-1, 0);
+        }
+        temp_buffer[temp_buffer_index] = '\0';
+        free(buf);
+        add_cache_element(temp_buffer, strlen(temp_buffer), tempReq);
+        free(temp_buffer);
+        close(remoteSocketId);
+        return 0;
+    }
+
 }
 
 void *handle_client(void *socketNew){
