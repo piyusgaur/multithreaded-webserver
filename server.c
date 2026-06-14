@@ -90,5 +90,31 @@ int main(int argc, char *argv[]){
         exit(1);
     }
 
+    int i=0;
+    int connectedSocketId[MAX_CLIENTS];
+    while(1){
+        bzero((char *)&client_addr, sizeof(client_addr));
+        client_len = sizeof(client_addr);
+        client_socketId = accept(proxy_socketId, (struct sockaddr *)&client_addr, &client_len);
+        if(client_socketId < 0){
+            perror("Error accepting connection");
+            continue;
+        }
+        else{
+            connectedSocketId[i] = client_socketId;
+        }
+
+        struct sockaddr_in *client_ip = (struct sockaddr_in *)&client_addr;
+        struct in_addr client_in_addr = client_ip->sin_addr;
+        char str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &client_in_addr, str, INET_ADDRSTRLEN);
+        printf("Client is connected with port number : %d and IP address : %s\n", ntohs(client_ip->sin_port), str);
+
+        pthread_create(&tid[i], NULL, handle_client, (void *)&connectedSocketId[i]);
+        i++;
+    }
+    close(proxy_socketId);
+    return 0;
+
 }
 
