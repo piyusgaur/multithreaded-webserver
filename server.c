@@ -45,6 +45,37 @@ pthread_mutex_t lock;
 cache_element *head;
 int cache_size;
 
+int handle_request(int socket, ParsedRequest *request, char *tempReq){
+    char *buf = (char *)malloc(MAX_BYTES*sizeof(char));
+    strcpy(buf, "GET ");
+    strcat(buf, request->path);
+    strcat(buf, " ");
+    strcat(buf, request->version);
+    strcat(buf, "\r\nHost: ");
+
+    size_t len = strlen(buf);
+
+    if(ParsedHeader_set(request, "Connection", "close") < 0){
+        perror("Error setting header");
+    }
+
+    if(ParsedHeader_get(request, "Host") == NULL){
+        if(ParsedHeader_set(request, "Host", request->host) < 0){
+            perror("Error setting header");
+        }
+    }
+
+    if(ParsedRequest_unparse_headers(request, buf+len, (size_t)(MAX_BYTES-len)) < 0){
+        perror("Error unparsing headers");
+    }
+
+    int server_port = 80;
+    if(request->port != NULL){
+        server_port = atoi(request->port);
+    }
+
+    int remoteSocketId = connectRemoteServer(request->host, server_port);
+}
 
 void *handle_client(void *socketNew){
     sem_wait(&semaphore);
