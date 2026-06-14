@@ -127,7 +127,7 @@ int add_cache_element(char *data, int size, char *url){
 }
 
 int sendErrorMessage(int socket, int errorCode){
-    char *message;
+    const char *message;
     if(errorCode == 500){
         message = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/html\r\n\r\n<html><body><h1>500 Internal Server Error</h1></body></html>";
     }
@@ -270,7 +270,7 @@ void *handle_client(void *socketNew){
     }
 
     char *tempReq = (char *)malloc(strlen(buffer)*sizeof(char)+1);
-    for(int i=0; i<strlen(buffer); i++){
+    for(size_t i=0; i<strlen(buffer); i++){
         tempReq[i] = buffer[i];
     }
 
